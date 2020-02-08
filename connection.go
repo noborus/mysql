@@ -9,6 +9,7 @@
 package mysql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -34,6 +35,9 @@ type mysqlConn struct {
 	sequence         uint8
 	parseTime        bool
 	reset            bool // set when the Go SQL package calls ResetSession
+	inLoadData       bool
+	loadData         bytes.Buffer
+	maxLoadDataSize  int
 
 	// for context support (Go 1.8+)
 	watching bool
@@ -150,6 +154,17 @@ func (mc *mysqlConn) Prepare(query string) (driver.Stmt, error) {
 	if mc.closed.IsSet() {
 		errLog.Print(ErrInvalidConn)
 		return nil, driver.ErrBadConn
+	}
+	if len(query) > 4 && strings.EqualFold(query[:4], "LOAD") {
+		err := mc.exec(query)
+		if err == nil {
+			mc.inLoadData = true
+		}
+		stmt := &mysqlStmt{
+			mc:         mc,
+			paramCount: -1,
+		}
+		return stmt, err
 	}
 	// Send command
 	err := mc.writeCommandPacketStr(comStmtPrepare, query)
@@ -309,6 +324,9 @@ func (mc *mysqlConn) Exec(query string, args []driver.Value) (driver.Result, err
 	if mc.closed.IsSet() {
 		errLog.Print(ErrInvalidConn)
 		return nil, driver.ErrBadConn
+	}
+	if mc.inLoadData {
+		return nil, mc.loadDataWrite(args)
 	}
 	if len(args) != 0 {
 		if !mc.cfg.InterpolateParams {
@@ -524,6 +542,10 @@ func (mc *mysqlConn) ExecContext(ctx context.Context, query string, args []drive
 		return nil, err
 	}
 
+	if mc.inLoadData {
+		return nil, mc.loadDataWrite(dargs)
+	}
+
 	if err := mc.watchCancel(ctx); err != nil {
 		return nil, err
 	}
@@ -577,6 +599,9 @@ func (stmt *mysqlStmt) ExecContext(ctx context.Context, args []driver.NamedValue
 		return nil, err
 	}
 
+	if stmt.mc.inLoadData {
+		return nil, stmt.mc.loadDataWrite(dargs)
+	}
 	if err := stmt.mc.watchCancel(ctx); err != nil {
 		return nil, err
 	}

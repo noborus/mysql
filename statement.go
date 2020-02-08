@@ -48,6 +48,9 @@ func (stmt *mysqlStmt) Exec(args []driver.Value) (driver.Result, error) {
 		errLog.Print(ErrInvalidConn)
 		return nil, driver.ErrBadConn
 	}
+	if stmt.mc.inLoadData {
+		return nil, stmt.mc.loadDataWrite(args)
+	}
 	// Send command
 	err := stmt.writeExecutePacket(args)
 	if err != nil {
