@@ -191,15 +191,72 @@ func (mc *mysqlConn) handleInFileRequest(name string) (err error) {
 func (mc *mysqlConn) loadDataStart() (err error) {
 	mc.inLoadData = true
 	mc.maxLoadDataSize = 16 * 1024 // 16KB is small enough for disk readahead and large enough for TCP
-	if mc.maxWriteSize < mc.maxLoadDataSize {
+	if (mc.maxWriteSize / 2) < mc.maxLoadDataSize {
 		mc.maxLoadDataSize = mc.maxWriteSize
 	}
-
 	mc.loadData.Write([]byte{0, 0, 0, 0})
 	return nil
 }
 
+func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
+	if len(args) == 0 {
+		return mc.loadDataTerminate()
+	}
+
+	for n, column := range args {
+		if n > 0 {
+			mc.loadData.WriteByte('\t')
+		}
+		mc.loadData.WriteString(mc.loadEscapeText(column))
+	}
+	mc.loadData.WriteByte('\n')
+	if mc.loadData.Len() > mc.maxLoadDataSize {
+		err = mc.loadDataWritePacket()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (mc *mysqlConn) loadDataWritePacket() (err error) {
+	if ioErr := mc.writePacket(mc.loadData.Bytes()); ioErr != nil {
+		return ioErr
+	}
+	mc.loadData.Reset()
+	mc.loadData.Write([]byte{0, 0, 0, 0})
+	return nil
+}
+
+func (mc *mysqlConn) loadDataTerminate() (err error) {
+	defer func() {
+		mc.inLoadData = false
+	}()
+	if ioErr := mc.loadDataWritePacket(); ioErr != nil {
+		return ioErr
+	}
+	mc.loadData.Reset()
+
+	// send empty packet (termination)
+	data := make([]byte, 4)
+	if ioErr := mc.writePacket(data); ioErr != nil {
+		return ioErr
+	}
+
+	// read OK packet
+	if err == nil {
+
+		return mc.readResultOK()
+	}
+
+	mc.readPacket()
+	return err
+}
+
 func (mc *mysqlConn) loadEscapeText(x interface{}) string {
+	if x == nil {
+		return "\\N"
+	}
 	switch v := x.(type) {
 	case int64:
 		return strconv.FormatInt(v, 10)
@@ -303,60 +360,4 @@ func escapedText(text string) string {
 		}
 	}
 	return string(result)
-}
-
-func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
-	if len(args) == 0 {
-		return mc.loadDataTerminate()
-	}
-
-	for n, column := range args {
-		if n > 0 {
-			mc.loadData.WriteByte('\t')
-		}
-		str := mc.loadEscapeText(column)
-		if mc.loadData.Len()+len(str)+2 > mc.maxLoadDataSize {
-			err = mc.loadDataWritePacket()
-			if err != nil {
-				return err
-			}
-		}
-		mc.loadData.WriteString(str)
-	}
-	mc.loadData.WriteByte('\n')
-	return nil
-}
-
-func (mc *mysqlConn) loadDataWritePacket() (err error) {
-	if ioErr := mc.writePacket(mc.loadData.Bytes()); ioErr != nil {
-		return ioErr
-	}
-	mc.loadData.Reset()
-	mc.loadData.Write([]byte{0, 0, 0, 0})
-	return nil
-}
-
-func (mc *mysqlConn) loadDataTerminate() (err error) {
-	defer func() {
-		mc.inLoadData = false
-	}()
-	if ioErr := mc.loadDataWritePacket(); ioErr != nil {
-		return ioErr
-	}
-	mc.loadData.Reset()
-
-	// send empty packet (termination)
-	data := make([]byte, 4)
-	if ioErr := mc.writePacket(data); ioErr != nil {
-		return ioErr
-	}
-
-	// read OK packet
-	if err == nil {
-
-		return mc.readResultOK()
-	}
-
-	mc.readPacket()
-	return err
 }
