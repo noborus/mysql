@@ -96,176 +96,6 @@ func deferredClose(err *error, closer io.Closer) {
 	}
 }
 
-func (mc *mysqlConn) loadDataStart() (err error) {
-	mc.inLoadData = true
-	mc.maxLoadDataSize = 16 * 1024 // 16KB is small enough for disk readahead and large enough for TCP
-	if mc.maxWriteSize < mc.maxLoadDataSize {
-		mc.maxLoadDataSize = mc.maxWriteSize
-	}
-
-	mc.loadData.Write([]byte{0, 0, 0, 0})
-	return nil
-}
-
-func (mc *mysqlConn) loadEscapeText(x interface{}) string {
-	switch v := x.(type) {
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case uint64:
-		return strconv.FormatUint(v, 10)
-	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64)
-	case bool:
-		if v {
-			return "1"
-		} else {
-			return "0"
-		}
-	case time.Time:
-		if v.IsZero() {
-			return "'0000-00-00'"
-		} else {
-			v := v.In(mc.cfg.Loc)
-			v = v.Add(time.Nanosecond * 500) // To round under microsecond
-			year := v.Year()
-			year100 := year / 100
-			year1 := year % 100
-			month := v.Month()
-			day := v.Day()
-			hour := v.Hour()
-			minute := v.Minute()
-			second := v.Second()
-			micro := v.Nanosecond() / 1000
-
-			buf := []byte{
-				'\'',
-				digits10[year100], digits01[year100],
-				digits10[year1], digits01[year1],
-				'-',
-				digits10[month], digits01[month],
-				'-',
-				digits10[day], digits01[day],
-				' ',
-				digits10[hour], digits01[hour],
-				':',
-				digits10[minute], digits01[minute],
-				':',
-				digits10[second], digits01[second],
-			}
-			if micro != 0 {
-				micro10000 := micro / 10000
-				micro100 := micro / 100 % 100
-				micro1 := micro % 100
-				buf = append(buf, []byte{
-					'.',
-					digits10[micro10000], digits01[micro10000],
-					digits10[micro100], digits01[micro100],
-					digits10[micro1], digits01[micro1],
-				}...)
-			}
-			buf = append(buf, '\'')
-			return string(buf)
-		}
-	case []byte:
-		if v == nil {
-			return "NULL"
-		} else {
-			return fmt.Sprint(v)
-		}
-	case string:
-		return escapedText(v)
-	default:
-		return ""
-	}
-}
-
-func escapedText(text string) string {
-	escapeNeeded := false
-	startPos := 0
-	var c byte
-
-	for i := 0; i < len(text); i++ {
-		c = text[i]
-		if c == '\\' || c == '\n' || c == '\r' || c == '\t' {
-			escapeNeeded = true
-			startPos = i
-			break
-		}
-	}
-	if !escapeNeeded {
-		return text
-	}
-
-	result := []byte(text[:startPos])
-	for i := startPos; i < len(text); i++ {
-		c = text[i]
-		switch c {
-		case '\\':
-			result = append(result, '\\', '\\')
-		case '\n':
-			result = append(result, '\\', 'n')
-		case '\r':
-			result = append(result, '\\', 'r')
-		case '\t':
-			result = append(result, '\\', 't')
-		default:
-			result = append(result, c)
-		}
-	}
-	return string(result)
-}
-
-func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
-	if len(args) == 0 {
-		return mc.loadDataTerminate()
-	}
-
-	for n, column := range args {
-		if n > 0 {
-			mc.loadData.WriteByte('\t')
-		}
-		str := mc.loadEscapeText(column)
-		if mc.loadData.Len()+len(str)+2 > mc.maxLoadDataSize {
-			err = mc.loadDataWritePacket()
-			if err != nil {
-				return err
-			}
-		}
-		mc.loadData.WriteString(str)
-	}
-	mc.loadData.WriteByte('\n')
-	return nil
-}
-
-func (mc *mysqlConn) loadDataWritePacket() (err error) {
-	if ioErr := mc.writePacket(mc.loadData.Bytes()); ioErr != nil {
-		return ioErr
-	}
-	mc.loadData.Reset()
-	mc.loadData.Write([]byte{0, 0, 0, 0})
-	return nil
-}
-
-func (mc *mysqlConn) loadDataTerminate() (err error) {
-	if ioErr := mc.loadDataWritePacket(); ioErr != nil {
-		return ioErr
-	}
-	// send empty packet (termination)
-	data := make([]byte, 4)
-	if ioErr := mc.writePacket(data); ioErr != nil {
-		return ioErr
-	}
-
-	// read OK packet
-	if err == nil {
-		return mc.readResultOK()
-	}
-
-	mc.readPacket()
-	mc.inLoadData = false
-	return err
-}
-
 func (mc *mysqlConn) handleInFileRequest(name string) (err error) {
 	var rdr io.Reader
 	var data []byte
@@ -351,6 +181,179 @@ func (mc *mysqlConn) handleInFileRequest(name string) (err error) {
 
 	// read OK packet
 	if err == nil {
+		return mc.readResultOK()
+	}
+
+	mc.readPacket()
+	return err
+}
+
+func (mc *mysqlConn) loadDataStart() (err error) {
+	mc.inLoadData = true
+	mc.maxLoadDataSize = 16 * 1024 // 16KB is small enough for disk readahead and large enough for TCP
+	if mc.maxWriteSize < mc.maxLoadDataSize {
+		mc.maxLoadDataSize = mc.maxWriteSize
+	}
+
+	mc.loadData.Write([]byte{0, 0, 0, 0})
+	return nil
+}
+
+func (mc *mysqlConn) loadEscapeText(x interface{}) string {
+	switch v := x.(type) {
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case bool:
+		if v {
+			return "1"
+		} else {
+			return "0"
+		}
+	case time.Time:
+		if v.IsZero() {
+			return "'0000-00-00'"
+		} else {
+			v := v.In(mc.cfg.Loc)
+			v = v.Add(time.Nanosecond * 500) // To round under microsecond
+			year := v.Year()
+			year100 := year / 100
+			year1 := year % 100
+			month := v.Month()
+			day := v.Day()
+			hour := v.Hour()
+			minute := v.Minute()
+			second := v.Second()
+			micro := v.Nanosecond() / 1000
+
+			buf := []byte{
+				digits10[year100], digits01[year100],
+				digits10[year1], digits01[year1],
+				'-',
+				digits10[month], digits01[month],
+				'-',
+				digits10[day], digits01[day],
+				' ',
+				digits10[hour], digits01[hour],
+				':',
+				digits10[minute], digits01[minute],
+				':',
+				digits10[second], digits01[second],
+			}
+			if micro != 0 {
+				micro10000 := micro / 10000
+				micro100 := micro / 100 % 100
+				micro1 := micro % 100
+				buf = append(buf, []byte{
+					'.',
+					digits10[micro10000], digits01[micro10000],
+					digits10[micro100], digits01[micro100],
+					digits10[micro1], digits01[micro1],
+				}...)
+			}
+			return string(buf)
+		}
+	case []byte:
+		if v == nil {
+			return "NULL"
+		} else {
+			return fmt.Sprint(v)
+		}
+	case string:
+		return escapedText(v)
+	default:
+		return ""
+	}
+}
+
+func escapedText(text string) string {
+	escapeNeeded := false
+	startPos := 0
+	var c byte
+
+	for i := 0; i < len(text); i++ {
+		c = text[i]
+		if c == '\\' || c == '\n' || c == '\r' || c == '\t' {
+			escapeNeeded = true
+			startPos = i
+			break
+		}
+	}
+	if !escapeNeeded {
+		return text
+	}
+
+	result := []byte(text[:startPos])
+	for i := startPos; i < len(text); i++ {
+		c = text[i]
+		switch c {
+		case '\\':
+			result = append(result, '\\', '\\')
+		case '\n':
+			result = append(result, '\\', 'n')
+		case '\r':
+			result = append(result, '\\', 'r')
+		case '\t':
+			result = append(result, '\\', 't')
+		default:
+			result = append(result, c)
+		}
+	}
+	return string(result)
+}
+
+func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
+	if len(args) == 0 {
+		return mc.loadDataTerminate()
+	}
+
+	for n, column := range args {
+		if n > 0 {
+			mc.loadData.WriteByte('\t')
+		}
+		str := mc.loadEscapeText(column)
+		if mc.loadData.Len()+len(str)+2 > mc.maxLoadDataSize {
+			err = mc.loadDataWritePacket()
+			if err != nil {
+				return err
+			}
+		}
+		mc.loadData.WriteString(str)
+	}
+	mc.loadData.WriteByte('\n')
+	return nil
+}
+
+func (mc *mysqlConn) loadDataWritePacket() (err error) {
+	if ioErr := mc.writePacket(mc.loadData.Bytes()); ioErr != nil {
+		return ioErr
+	}
+	mc.loadData.Reset()
+	mc.loadData.Write([]byte{0, 0, 0, 0})
+	return nil
+}
+
+func (mc *mysqlConn) loadDataTerminate() (err error) {
+	defer func() {
+		mc.inLoadData = false
+	}()
+	if ioErr := mc.loadDataWritePacket(); ioErr != nil {
+		return ioErr
+	}
+	mc.loadData.Reset()
+
+	// send empty packet (termination)
+	data := make([]byte, 4)
+	if ioErr := mc.writePacket(data); ioErr != nil {
+		return ioErr
+	}
+
+	// read OK packet
+	if err == nil {
+
 		return mc.readResultOK()
 	}
 
