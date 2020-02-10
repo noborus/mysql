@@ -1523,6 +1523,127 @@ func TestRawBytesResultExceedsBuffer(t *testing.T) {
 	})
 }
 
+func TestLOADDATA(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		in := [][]driver.Value{{"ttt", nil}, {"tt2", "tt2"}, {"tt3", nil}}
+		result := [][]string{{"ttt", ""}, {"tt2", "tt2"}, {"tt3", ""}}
+		var rows *sql.Rows
+
+		for n, v := range in {
+			dbt.mustExec("CREATE TABLE test (value text, value2 text)")
+
+			dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
+			dbt.mustExec("", v[0], v[1])
+			dbt.mustExec("")
+			rows = dbt.mustQuery("SELECT * FROM test")
+			if rows.Next() {
+				var out, out2 string
+				rows.Scan(&out, &out2)
+				if result[n][0] != out {
+					dbt.Errorf("[%#v] != [%#v]", result[n][0], out)
+				}
+				if result[n][1] != out2 {
+					dbt.Errorf("[%#v] != [%#v]", result[n][1], out)
+				}
+			}
+			rows.Close()
+
+			dbt.mustExec("DROP TABLE IF EXISTS test")
+		}
+	})
+}
+
+func TestLOADDATAString(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		types := []string{"varchar(10)", "text"}
+		in := "ttt"
+		var rows *sql.Rows
+
+		for _, v := range types {
+			dbt.mustExec("CREATE TABLE test (value " + v + ")")
+
+			dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
+			dbt.mustExec("", in)
+			dbt.mustExec("")
+			rows = dbt.mustQuery("SELECT value FROM test")
+			if rows.Next() {
+				var out string
+				rows.Scan(&out)
+				if in != out {
+					dbt.Errorf("%s: [%#v] != [%#v]", v, in, out)
+				}
+			} else {
+				dbt.Errorf("%s: no data", v)
+			}
+			rows.Close()
+
+			dbt.mustExec("DROP TABLE IF EXISTS test")
+		}
+	})
+}
+
+func TestLOADDATATime(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		types := []string{"datetime"}
+		in := time.Date(2001, 5, 20, 23, 59, 59, 0, time.UTC)
+		const layout = "2006-01-02 15:04:05"
+		var rows *sql.Rows
+
+		for _, v := range types {
+			dbt.mustExec("CREATE TABLE test (value " + v + ")")
+
+			dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
+			dbt.mustExec("", in)
+			dbt.mustExec("")
+
+			rows = dbt.mustQuery("SELECT value FROM test")
+			if rows.Next() {
+				var out string
+				rows.Scan(&out)
+				if in.Format(layout) != out {
+					dbt.Errorf("%s: %s != %s", v, in, out)
+				}
+			} else {
+				dbt.Errorf("%s: no data", v)
+			}
+			rows.Close()
+
+			dbt.mustExec("DROP TABLE IF EXISTS test")
+		}
+	})
+}
+
+func TestLOADDATANULLTime(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		types := []string{"datetime"}
+		in := time.Time{}
+		nulltime := "0000-00-00 00:00:00"
+		var rows *sql.Rows
+
+		for _, v := range types {
+			dbt.mustExec("CREATE TABLE test (value " + v + ")")
+
+			dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
+			dbt.mustExec("", in)
+			dbt.mustExec("")
+
+			rows = dbt.mustQuery("SELECT value FROM test")
+			if rows.Next() {
+				var out string
+				rows.Scan(&out)
+				if nulltime != out {
+					dbt.Errorf("%s: %s != %s", v, in, out)
+				}
+			} else {
+				dbt.Errorf("%s: no data", v)
+			}
+			rows.Close()
+
+			dbt.mustExec("DROP TABLE IF EXISTS test")
+		}
+	})
+}
+
 func TestTimezoneConversion(t *testing.T) {
 	zones := []string{"UTC", "US/Central", "US/Pacific", "Local"}
 

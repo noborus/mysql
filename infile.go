@@ -192,7 +192,7 @@ func (mc *mysqlConn) loadDataStart() (err error) {
 	mc.inLoadData = true
 	mc.maxLoadDataSize = 16 * 1024 // 16KB is small enough for disk readahead and large enough for TCP
 	if (mc.maxWriteSize / 2) < mc.maxLoadDataSize {
-		mc.maxLoadDataSize = mc.maxWriteSize
+		mc.maxLoadDataSize = mc.maxWriteSize / 2
 	}
 	mc.loadData.Write([]byte{0, 0, 0, 0})
 	return nil
@@ -207,7 +207,7 @@ func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
 		if n > 0 {
 			mc.loadData.WriteByte('\t')
 		}
-		mc.loadData.WriteString(mc.loadEscapeText(column))
+		mc.loadData.WriteString(mc.encodedLoadData(column))
 	}
 	mc.loadData.WriteByte('\n')
 	if mc.loadData.Len() > mc.maxLoadDataSize {
@@ -253,10 +253,7 @@ func (mc *mysqlConn) loadDataTerminate() (err error) {
 	return err
 }
 
-func (mc *mysqlConn) loadEscapeText(x interface{}) string {
-	if x == nil {
-		return "\\N"
-	}
+func (mc *mysqlConn) encodedLoadData(x interface{}) string {
 	switch v := x.(type) {
 	case int64:
 		return strconv.FormatInt(v, 10)
@@ -272,7 +269,7 @@ func (mc *mysqlConn) loadEscapeText(x interface{}) string {
 		}
 	case time.Time:
 		if v.IsZero() {
-			return "'0000-00-00'"
+			return "0000-00-00"
 		} else {
 			v := v.In(mc.cfg.Loc)
 			v = v.Add(time.Nanosecond * 500) // To round under microsecond
@@ -315,13 +312,17 @@ func (mc *mysqlConn) loadEscapeText(x interface{}) string {
 		}
 	case []byte:
 		if v == nil {
-			return "NULL"
+			return "\\N"
 		} else {
-			return fmt.Sprint(v)
+			// TODO: Unknown character string for []byte
+			return escapedText(string(v))
 		}
 	case string:
 		return escapedText(v)
+	case nil:
+		return "\\N"
 	default:
+		errLog.Print("unsupported type")
 		return ""
 	}
 }
