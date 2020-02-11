@@ -1279,6 +1279,7 @@ func TestExecLoadData(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		in := [][]driver.Value{{"tt1", "tt1"}, {"tt2", "tt2"}, {"tt3", nil}}
 		v := [][]string{{"tt1", "tt1"}, {"tt2", "tt2"}, {"tt3", ""}}
+		dbt.db.Exec("DROP TABLE IF EXISTS test")
 
 		dbt.mustExec("CREATE TABLE test (value text, value2 text)")
 		dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
@@ -1296,7 +1297,7 @@ func TestExecLoadData(t *testing.T) {
 				dbt.Errorf("expected %v, got %v", v[n][0], out)
 			}
 			if !bytes.Equal([]byte(v[n][1]), out2) {
-				dbt.Errorf("expected %v, got %v", v[n][1], out)
+				dbt.Errorf("expected %v, got %v", v[n][1], out2)
 			}
 			rows.Close()
 		}
@@ -1310,17 +1311,18 @@ func TestPrepareLoadData(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		in := []driver.Value{"test1", "test2"}
 		v := []string{"test1", "test2"}
-		dbt.mustExec("CREATE TABLE test (value1 text, value2 text)")
+		dbt.db.Exec("DROP TABLE IF EXISTS test")
+		dbt.mustExec("CREATE TABLE test (id INT, value1 text, value2 text)")
 
 		// Uncomment the next 'INSERT' line and comment out 'LOAD DATA' so it works.
-		//stmt, err := dbt.db.Prepare("INSERT INTO test (value1, value2) VALUES(?,?);")
-		stmt, err := dbt.db.Prepare("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test (value1, value2)")
+		//stmt, err := dbt.db.Prepare("INSERT INTO test (id, value1, value2) VALUES(?, ?, ?);")
+		stmt, err := dbt.db.Prepare("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test (id, value1, value2)")
 		if err != nil {
 			t.Fatalf("error preparing statement: %s", err.Error())
 		}
 
 		for i := 0; i < count; i++ {
-			_, err = stmt.Exec(in[0], in[1])
+			_, err = stmt.Exec(i, in[0], in[1])
 			if err != nil {
 				t.Fatalf("error executing statement: %s", err.Error())
 			}
@@ -1342,17 +1344,18 @@ func TestPrepareLoadData(t *testing.T) {
 		if count != c {
 			dbt.Errorf("Load Data Error:%v != %v", c, count)
 		}
-		rows = dbt.mustQuery("SELECT * FROM test")
+		rows = dbt.mustQuery("SELECT id, value1, value2 FROM test")
 		for rows.Next() {
+			var id int
 			var out, out2 sql.RawBytes
-			if err := rows.Scan(&out, &out2); err != nil {
+			if err := rows.Scan(&id, &out, &out2); err != nil {
 				dbt.Fatal(err.Error())
 			}
 			if !bytes.Equal([]byte(v[0]), out) {
 				dbt.Errorf("expected %v, got %v", v[0], out)
 			}
 			if !bytes.Equal([]byte(v[1]), out2) {
-				dbt.Errorf("expected %v, got %v", v[1], out)
+				dbt.Errorf("expected %v, got %v", v[1], out2)
 			}
 		}
 		rows.Close()
@@ -1422,6 +1425,7 @@ func TestExecLoadDataType(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		var rows *sql.Rows
 		for _, tType := range tTypes {
+			dbt.db.Exec("DROP TABLE IF EXISTS test")
 			dbt.mustExec("CREATE TABLE test (value " + tType.dbType + ")")
 
 			dbt.mustExec("LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE test")
