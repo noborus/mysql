@@ -9,7 +9,6 @@
 package mysql
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -36,7 +35,7 @@ type mysqlConn struct {
 	parseTime        bool
 	reset            bool // set when the Go SQL package calls ResetSession
 	inLoadData       bool
-	loadData         bytes.Buffer
+	loadData         []byte
 	maxLoadDataSize  int
 
 	// for context support (Go 1.8+)

@@ -194,7 +194,7 @@ func (mc *mysqlConn) loadDataStart() (err error) {
 	if (mc.maxWriteSize / 2) < mc.maxLoadDataSize {
 		mc.maxLoadDataSize = mc.maxWriteSize / 2
 	}
-	mc.loadData.Write([]byte{0, 0, 0, 0})
+	mc.loadData = []byte{0, 0, 0, 0}
 	return nil
 }
 
@@ -205,12 +205,12 @@ func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
 
 	for n, column := range args {
 		if n > 0 {
-			mc.loadData.WriteByte('\t')
+			mc.loadData = append(mc.loadData, '\t')
 		}
-		mc.loadData.WriteString(mc.encodedLoadData(column))
+		mc.loadData = mc.appendEncode(mc.loadData, column)
 	}
-	mc.loadData.WriteByte('\n')
-	if mc.loadData.Len() > mc.maxLoadDataSize {
+	mc.loadData = append(mc.loadData, '\n')
+	if len(mc.loadData) > mc.maxLoadDataSize {
 		err = mc.loadDataWritePacket()
 		if err != nil {
 			return err
@@ -220,11 +220,10 @@ func (mc *mysqlConn) loadDataWrite(args []driver.Value) (err error) {
 }
 
 func (mc *mysqlConn) loadDataWritePacket() (err error) {
-	if ioErr := mc.writePacket(mc.loadData.Bytes()); ioErr != nil {
+	if ioErr := mc.writePacket(mc.loadData); ioErr != nil {
 		return ioErr
 	}
-	mc.loadData.Reset()
-	mc.loadData.Write([]byte{0, 0, 0, 0})
+	mc.loadData = mc.loadData[:4]
 	return nil
 }
 
@@ -235,17 +234,13 @@ func (mc *mysqlConn) loadDataTerminate() (err error) {
 	if ioErr := mc.loadDataWritePacket(); ioErr != nil {
 		return ioErr
 	}
-	mc.loadData.Reset()
-
-	// send empty packet (termination)
-	data := make([]byte, 4)
-	if ioErr := mc.writePacket(data); ioErr != nil {
+	mc.loadData = mc.loadData[:4]
+	if ioErr := mc.writePacket(mc.loadData); ioErr != nil {
 		return ioErr
 	}
 
 	// read OK packet
 	if err == nil {
-
 		return mc.readResultOK()
 	}
 
@@ -253,23 +248,23 @@ func (mc *mysqlConn) loadDataTerminate() (err error) {
 	return err
 }
 
-func (mc *mysqlConn) encodedLoadData(x interface{}) string {
+func (mc *mysqlConn) appendEncode(buf []byte, x driver.Value) []byte {
 	switch v := x.(type) {
 	case int64:
-		return strconv.FormatInt(v, 10)
+		return strconv.AppendInt(buf, v, 10)
 	case uint64:
-		return strconv.FormatUint(v, 10)
+		return strconv.AppendUint(buf, v, 10)
 	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64)
+		return strconv.AppendFloat(buf, v, 'g', -1, 64)
 	case bool:
 		if v {
-			return "1"
+			return append(buf, '1')
 		} else {
-			return "0"
+			return append(buf, '0')
 		}
 	case time.Time:
 		if v.IsZero() {
-			return "0000-00-00"
+			return append(buf, "0000-00-00"...)
 		} else {
 			v := v.In(mc.cfg.Loc)
 			v = v.Add(time.Nanosecond * 500) // To round under microsecond
@@ -283,7 +278,7 @@ func (mc *mysqlConn) encodedLoadData(x interface{}) string {
 			second := v.Second()
 			micro := v.Nanosecond() / 1000
 
-			buf := []byte{
+			buf := append(buf, []byte{
 				digits10[year100], digits01[year100],
 				digits10[year1], digits01[year1],
 				'-',
@@ -296,7 +291,7 @@ func (mc *mysqlConn) encodedLoadData(x interface{}) string {
 				digits10[minute], digits01[minute],
 				':',
 				digits10[second], digits01[second],
-			}
+			}...)
 			if micro != 0 {
 				micro10000 := micro / 10000
 				micro100 := micro / 100 % 100
@@ -308,32 +303,36 @@ func (mc *mysqlConn) encodedLoadData(x interface{}) string {
 					digits10[micro1], digits01[micro1],
 				}...)
 			}
-			return string(buf)
+			return buf
 		}
 	case []byte:
 		if v == nil {
-			return "\\N"
+			return append(buf, "\\N"...)
 		} else {
-			// TODO: Unknown character string for []byte
-			return escapedText(string(v))
+			if mc.status&statusNoBackslashEscapes == 0 {
+				buf = escapeBytesBackslash(buf, v)
+			} else {
+				buf = escapeBytesQuotes(buf, v)
+			}
+			return buf
 		}
 	case string:
-		return escapedText(v)
+		return appendEscaped(buf, v)
 	case nil:
-		return "\\N"
+		return append(buf, "\\N"...)
 	default:
 		errLog.Print("unsupported type")
-		return ""
+		return buf
 	}
 }
 
-func escapedText(text string) string {
+func appendEscaped(buf []byte, v string) []byte {
 	escapeNeeded := false
 	startPos := 0
 	var c byte
 
-	for i := 0; i < len(text); i++ {
-		c = text[i]
+	for i := 0; i < len(v); i++ {
+		c = v[i]
 		if c == '\\' || c == '\n' || c == '\r' || c == '\t' {
 			escapeNeeded = true
 			startPos = i
@@ -341,12 +340,12 @@ func escapedText(text string) string {
 		}
 	}
 	if !escapeNeeded {
-		return text
+		return append(buf, v...)
 	}
 
-	result := []byte(text[:startPos])
-	for i := startPos; i < len(text); i++ {
-		c = text[i]
+	result := append(buf, v[:startPos]...)
+	for i := startPos; i < len(v); i++ {
+		c = v[i]
 		switch c {
 		case '\\':
 			result = append(result, '\\', '\\')
@@ -360,5 +359,5 @@ func escapedText(text string) string {
 			result = append(result, c)
 		}
 	}
-	return string(result)
+	return result
 }
