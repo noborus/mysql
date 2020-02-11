@@ -29,6 +29,9 @@ func (stmt *mysqlStmt) Close() error {
 		//errLog.Print(ErrInvalidConn)
 		return driver.ErrBadConn
 	}
+	if stmt.mc.inLoadData {
+		return stmt.mc.loadDataTerminate()
+	}
 
 	err := stmt.mc.writeCommandPacketUint32(comStmtClose, stmt.id)
 	stmt.mc = nil
