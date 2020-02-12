@@ -454,7 +454,7 @@ See the [godoc of Go-MySQL-Driver](https://godoc.org/github.com/go-sql-driver/my
 ### Execute `LOAD DATA LOCAL INFILE` instead of `INSERT INTO`
 
 Enables `LOAD DATA LOCAL INFILE` without the need to call a special function.
-
+Using `LOAD DATA LOCAL INFILE` instead of `INSERT INTO` is available with the filepath `Data::Data`.
 Create a statement by executing `LOAD DATA LOCAL INFILE 'Data::Data' INTO TABLE table name` as a query to the prepare function.
 Execute the returned statement with a value in Exec.
 Exec is imported as LOAD DATA until the statement is closed.
