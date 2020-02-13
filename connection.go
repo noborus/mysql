@@ -156,9 +156,10 @@ func (mc *mysqlConn) Prepare(query string) (driver.Stmt, error) {
 	}
 	if len(query) > 4 && strings.EqualFold(query[:4], "LOAD") {
 		err := mc.exec(query)
-		if err == nil {
-			mc.inLoadData = true
+		if err != nil {
+			return nil, err
 		}
+		mc.inLoadData = true
 		stmt := &mysqlStmt{
 			mc:         mc,
 			paramCount: -1,
